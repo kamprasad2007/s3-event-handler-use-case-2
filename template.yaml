@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  S3 Event handler to process files
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Globals:
+  Function:
+    Timeout: 60
+
+Resources:
+  S3FileProcessingFifoQueue: 
+    Type: AWS::SQS::Queue
+    Properties: 
+      QueueName: !Sub "S3-File-Processing-Queue-${Environment}.fifo"
+      FifoQueue: True
+      ContentBasedDeduplication: true
+  S3FileProcessingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "file-processing-use-case-2-${Environment}"
+      Tags:
+        - Key: name
+          Value: fileUpload
+  S3FileProcessingLambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: python.zip
+      CompatibleRuntimes:
+        - python3.8
+  S3FileProcessingEventHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "S3-File-Processing-Event-Handler-${Environment}"
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Layers:
+        - !Ref S3FileProcessingLambdaLayer
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref "S3FileProcessingFifoQueue"
+      Events:
+        S3PutObjectEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref S3FileProcessingBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: input-files/
+                  - Name: suffix
+                    Value: .txt
+      Policies:
+        - S3FullAccessPolicy:
+            BucketName: !Sub "file-processing-use-case-2-${Environment}"
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "S3-File-Processing-Queue-${Environment}.fifo"
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt S3FileProcessingEventHandler.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 's3.amazonaws.com'
+      SourceAccount: !Sub ${AWS::AccountId}
+      SourceArn: !GetAtt S3FileProcessingBucket.Arn
